@@ -1493,7 +1493,7 @@ async function doLogin(){
  const button=document.querySelector('#loginForm button[type="submit"]');button.disabled=true;
  try{const client=getCloud();const username=document.getElementById('loginId').value.trim().toLowerCase(),password=document.getElementById('loginPassword').value;
  const {data,error}=await client.functions.invoke('username-login',{body:{username,password}});
- if(error||!data?.access_token)throw Error('아이디 또는 비밀번호를 확인해 주세요. 이메일 인증 여부도 확인해 주세요.');
+ if(error||!data?.access_token)throw Error('아이디 또는 비밀번호를 확인해 주세요.');
  rememberPreference=document.getElementById('rememberLogin').checked?'yes':'no';
  browserStorage('sessionStorage','setItem','flora-remember',rememberPreference);
  const result=await client.auth.setSession(data);if(result.error)throw result.error;await loadCloud();
