@@ -301,13 +301,20 @@ main:has(#trackDialog[hidden]) { grid-template-rows: max-content minmax(150px,1f
  #trackDialog .wide { grid-column:1/-1; }
  body:has(#trackDialog:not([hidden])) #youtube { height:100px; }
 }
+
+#groups button { touch-action: pan-y; user-select:none; -webkit-user-select:none; -webkit-touch-callout:none; }
+.track h3, .track .meta { user-select:none; -webkit-user-select:none; }
+.track { touch-action:pan-y; }
+.track h3 { touch-action:none; -webkit-touch-callout:none; }
+.reorder-active { user-select:none; cursor:grabbing; }
+.reordering { opacity:.75; outline:3px solid #398b65; transform:scale(.98); }
 </style>
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="flower" aria-hidden="true">✿</span>
-      <div><h1>플로라 <small>V 0001.0005</small></h1><p>링크 플레이리스트</p></div>
+      <div><h1>플로라 <small>V 0001.0006</small></h1><p>링크 플레이리스트</p></div>
     </div>
     <details class="settings">
       <summary>설정</summary>
@@ -320,7 +327,7 @@ main:has(#trackDialog[hidden]) { grid-template-rows: max-content minmax(150px,1f
     </details>
   </header>
   <div class="tabs">
-    <nav id="groups" role="tablist" aria-label="플레이리스트"></nav>
+    <nav id="groups" role="tablist" aria-label="플레이리스트" title="탭을 꾹 누른 뒤 좌우로 끌어 순서 변경"></nav>
     <button id="addgroup" aria-label="플레이리스트 추가" title="플레이리스트 추가">＋</button>
   </div>
   <main>
@@ -369,7 +376,7 @@ main:has(#trackDialog[hidden]) { grid-template-rows: max-content minmax(150px,1f
   </section>
     <section class="listsection" aria-label="재생 목록">
       <div class="sectionhead">
-        <h2>재생 목록</h2>
+        <h2 title="곡 제목을 꾹 누른 뒤 위아래로 끌어 순서 변경">재생 목록 <small style="font-size:12px;font-weight:400">꾹 눌러 순서 변경</small></h2>
         <button id="addTrack" class="add-track">＋ 링크 추가</button>
       </div>
       <div class="queuebar">
@@ -429,6 +436,8 @@ let queue = null;
 let run = null;
 let player;
 let ytReady = false;
+let ytApiReady = false;
+let ytGeneration = 0;
 let videoVisible = false;
 let ytFailed = false;
 let ytConnectTimer;
@@ -455,10 +464,82 @@ function status(message = '') {
   $('status').hidden = !message;
 }
 
+let reorder = null;
+let suppressReorderClickUntil = 0;
+document.addEventListener('click', event => {
+  if (Date.now() < suppressReorderClickUntil) {
+    event.preventDefault(); event.stopImmediatePropagation();
+  }
+}, true);
+function enableReorder(node, id, kind) {
+  node.dataset.reorderId = id;
+  node.dataset.reorderKind = kind;
+  node.addEventListener('pointerdown', event => {
+    if (event.button !== 0 || reorder || (kind === 'tracks' && event.target.closest('button,input,label,select,a'))) return;
+    const drag = {node, id, kind, pointer:event.pointerId, x:event.clientX, y:event.clientY, active:false};
+    reorder = drag;
+    drag.timer = setTimeout(() => {
+      if (reorder !== drag) return;
+      drag.active = true;
+      node.classList.add('reordering');
+      node.setPointerCapture(event.pointerId);
+      document.body.classList.add('reorder-active');
+      navigator.vibrate?.(25);
+    }, 450);
+  });
+}
+document.addEventListener('pointermove', event => {
+  const drag = reorder;
+  if (!drag || drag.pointer !== event.pointerId) return;
+  if (!drag.active) {
+    if (Math.hypot(event.clientX-drag.x,event.clientY-drag.y)>9) cancelReorder();
+    return;
+  }
+  event.preventDefault();
+  const container = drag.kind === 'groups' ? $('groups') : $('tracks');
+  const horizontal = drag.kind === 'groups';
+  const nodes = [...container.children].filter(n => n.dataset.reorderId && n !== drag.node);
+  const coordinate = horizontal ? event.clientX : event.clientY;
+  const before = nodes.find(n => { const r=n.getBoundingClientRect(); return coordinate < (horizontal ? r.left+r.width/2 : r.top+r.height/2); });
+  container.insertBefore(drag.node, before || null);
+  const scroll = horizontal ? container : document.querySelector('.list-scroll');
+  const bounds = scroll.getBoundingClientRect();
+  const lo=horizontal?bounds.left:bounds.top, hi=horizontal?bounds.right:bounds.bottom;
+  const amount=coordinate<lo+35?-14:coordinate>hi-35?14:0;
+  if(horizontal)scroll.scrollLeft+=amount;else scroll.scrollTop+=amount;
+}, {passive:false});
+function cancelReorder() {
+  if (!reorder) return;
+  clearTimeout(reorder.timer);
+  reorder.node.classList.remove('reordering');
+  document.body.classList.remove('reorder-active');
+  reorder = null;
+}
+function finishReorder(event) {
+  const drag = reorder;
+  if (!drag || drag.pointer !== event.pointerId) return;
+  const active = drag.active;
+  if (active) {
+    const container = drag.kind === 'groups' ? $('groups') : $('tracks');
+    const items = drag.kind === 'groups' ? data.groups : group().tracks;
+    const byId = new Map(items.map(item=>[item.id,item]));
+    const ordered = [...container.children].map(n=>byId.get(n.dataset.reorderId)).filter(Boolean);
+    if(drag.kind==='groups') data.groups=ordered; else group().tracks=ordered;
+    suppressReorderClickUntil = Date.now()+500;
+    save();
+  }
+  cancelReorder();
+  if(active) { syncSelection(); syncPlayer(); toast('순서를 저장했습니다.'); }
+}
+document.addEventListener('pointerup', finishReorder);
+document.addEventListener('pointercancel', event=>{if(reorder?.active)finishReorder(event);else cancelReorder();});
+document.addEventListener('contextmenu', event=>{if(reorder?.active)event.preventDefault();});
+
 function render() {
   const g = group();
   $('groups').replaceChildren(...data.groups.map(item => {
     const tab = button(item.name, () => switchGroup(item.id));
+    enableReorder(tab, item.id, 'groups');
     tab.setAttribute('role', 'tab');
     tab.setAttribute('aria-selected', String(item.id === groupId));
     return tab;
@@ -471,6 +552,7 @@ function render() {
   }
   for (const item of g.tracks) {
     const row = el('article', undefined, 'track');
+    enableReorder(row, item.id, 'tracks');
     const checkLabel = el('label', undefined, 'trackcheck');
     const check = el('input');
     check.type = 'checkbox';
@@ -612,6 +694,7 @@ function stopCurrent() {
   stopShadow();
   pause();
   clearTimeout(ytConnectTimer);
+  destroyYouTube();
   run = null;
   currentId = null;
   queue = null;
@@ -684,6 +767,7 @@ function startTrack(id, fromQueue = false) {
   }
   pause();
   clearTimeout(ytConnectTimer);
+  destroyYouTube();
   currentId = id;
   videoVisible = group().mode !== 'music';
   trimEdit = null;
@@ -713,12 +797,15 @@ function startTrack(id, fromQueue = false) {
     failTrack(active, '유튜브 영상 주소를 확인해 주세요.');
     return;
   }
-  if (videoId && !ytReady && !ytFailed) connectYouTube();
+  if (videoId) {
+    if (ytApiReady) createYouTubePlayer(active);
+    else if (!ytFailed) connectYouTube();
+  }
   resume();
 }
 
 function youtubeMatches(active) {
-  return ytReady && active?.kind === 'yt' && active.requested
+  return !!player && ytReady && run === active && active?.kind === 'yt' && active.requested
     && player.getVideoData()?.video_id === active.videoId;
 }
 
@@ -754,53 +841,67 @@ function loadYouTube(active) {
   watchYouTube(active);
 }
 
-window.onYouTubeIframeAPIReady = () => {
+function destroyYouTube() {
+  ++ytGeneration;
+  const old = player;
+  player = null;
+  ytReady = false;
+  if (old) {
+    try { old.stopVideo(); } catch {}
+    try { old.destroy(); } catch {}
+  }
+  // Removing the old iframe also stops it if its API connection has stalled.
+  const mount = el('div');
+  mount.id = 'yt';
+  $('youtube').replaceChildren(mount);
+}
+
+function createYouTubePlayer(active) {
+  if (run !== active || active.kind !== 'yt') return;
+  const generation = ytGeneration;
+  const current = () => run === active && generation === ytGeneration;
   player = new YT.Player('yt', {
     playerVars: { playsinline: 1, origin: location.origin },
     events: {
-      onReady: () => {
+      onReady: event => {
+        if (!current()) { try { event.target.destroy(); } catch {} return; }
+        player = event.target;
         ytReady = true;
         clearTimeout(ytConnectTimer);
-        if (run?.kind === 'yt') loadYouTube(run);
+        if (active.wantsPlay) loadYouTube(active);
       },
-      onStateChange: ({ data: state }) => {
-        const active = run;
-        if (state === 1 && active?.kind !== 'yt') {
+      onStateChange: ({data: state}) => {
+        if (!current() || !ytReady) return;
+        if (state === 1 && (!active.wantsPlay || active.complete || active.failed || trimEdit || recording)) {
           player.pauseVideo();
           return;
         }
         if (!youtubeMatches(active) || player.getPlayerState() !== state) return;
         if (state === 1) {
-          if (active.complete || active.failed || trimEdit || recording) return;
           clearTimeout(ytConnectTimer);
-          active.wantsPlay = true;
           active.started = true;
-          status();
           setPlaying(true);
           updateRates();
           applyRate();
-        } else if (state === 2) {
-          setPlaying(false);
-        } else if (state === 0) {
-          onBoundary(active);
-        }
+        } else if (state === 2) setPlaying(false);
+        else if (state === 0) onBoundary(active);
       },
       onError: () => {
-        if (run?.kind === 'yt' && run.requested && run.wantsPlay) {
-          const reportedId = player.getVideoData()?.video_id;
-          if (!reportedId || reportedId === run.videoId) {
-            failTrack(run, '이 유튜브 영상은 여기에서 재생할 수 없어요.');
-          }
-        }
+        if (current() && active.requested && active.wantsPlay)
+          failTrack(active, '이 유튜브 영상은 여기에서 재생할 수 없어요.');
       },
       onAutoplayBlocked: () => {
-        if (run?.kind !== 'yt' || !run.requested || !run.wantsPlay || isPlaying()) return;
+        if (!current() || !active.requested || !active.wantsPlay || isPlaying()) return;
         clearTimeout(ytConnectTimer);
         setPlaying(false);
-        status('유튜브 자동 재생이 차단됐어요. 영상 또는 아래 재생 버튼을 눌러 주세요.');
+        status('유튜브 자동 재생이 차단됐어요. 재생 버튼을 눌러 주세요.');
       }
     }
   });
+}
+window.onYouTubeIframeAPIReady = () => {
+  ytApiReady = true;
+  if (run?.kind === 'yt') createYouTubePlayer(run);
 };
 
 $('showVideo').onclick = () => { videoVisible = !videoVisible; updateStage(); updateRates(); };
